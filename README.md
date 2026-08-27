@@ -1,178 +1,101 @@
-# Azure Databricks Retail Lakehouse Architecture (Medallion Pattern)
+# End-to-End Enterprise Data Engineering Portfolio
 
-## Executive Summary
-This repository houses an enterprise-grade, end-to-end Data Engineering solution implemented on **Azure Databricks** utilizing the **Medallion Architecture (Bronze $\rightarrow$ Silver $\rightarrow$ Gold)**. The platform solves operational data fragmentation by ingesting batch and streaming transactional datasets, enforcing schema validation, managing Change Data Capture (CDC) via **Delta Lake**, and serving dimensional star schemas via **Databricks SQL Warehouses** to **Power BI**.
-
----
-
-## Technical Architecture & Stack
-
-* **Cloud Provider:** Microsoft Azure
-* **Compute Engine:** Azure Databricks (Runtime 13.3 LTS / Apache Spark 3.4+), PySpark, Spark SQL, Delta Live Tables (DLT)
-* **Storage Layer:** Azure Data Lake Storage Gen2 (ADLS Gen2), Databricks File System (DBFS), Delta Lake (ACID Transactions, Schema Enforcement, Time Travel)
-* **Governance & Security:** Unity Catalog, Object-Level Access Control (RBAC), Service Principals
-* **Serving Layer:** Databricks SQL Warehouses (Serverless), Power BI (DirectQuery & Import Modes)
-
-```text
-                                AZURE DATABRICKS LAKEHOUSE PLATFORM
-+--------------------+      +-------------------------------------------------+      +--------------------+
-| DATA SOURCES       |      | BRONZE LAYER (Raw Delta Storage)                |      | CONSUMPTION        |
-|                    |      | - Append-only raw ingested payloads             |      |                    |
-| - Operational CRM  | ---> | - Preserves source metadata & timestamps        | |    | - Power BI         |
-| - ERP Inventory    |      +------------------------+------------------------+ |    |   Dashboards       |
-| - Point-of-Sale    |                               |                          |    |                    |
-+--------------------+                               v                          |    | - Databricks SQL   |
-                            +------------------------+------------------------+ |    |   Endpoint         |
-                            | SILVER LAYER (Conformed & Enriched)             | |    |                    |
-                            | - Schema enforcement & type casting             | |--->| - Ad-Hoc Analytics |
-                            | - Deduplication, CDC & Null Handling            | |    +--------------------+
-                            +------------------------+------------------------+ |
-                                                     |                          |
-                                                     v                          |
-                            +------------------------+------------------------+ |
-                            | GOLD LAYER (Curated Star Schema / Data Marts)   | |
-                            | - Fact & Dimension Models                       | |
-                            | - Pre-aggregated Business Metrics               | |
-                            +-------------------------------------------------+ |
-
-----
-
-Core Pipeline Implementations
-1. Ingestion Engine (Bronze Layer)
-
-Streaming raw files into append-only Delta tables with Auto Loader metadata tagging (_ingested_at, _source_file).
-
-from pyspark.sql.functions import current_timestamp, input_file_name
-
-def ingest_bronze_layer(source_path: str, target_table: str, checkpoint_path: str):
-    (spark.readStream
-        .format("cloudFiles")
-        .option("cloudFiles.format", "csv")
-        .option("cloudFiles.schemaLocation", f"{checkpoint_path}/_schemas")
-        .option("header", "true")
-        .load(source_path)
-        .withColumn("_ingested_at", current_timestamp())
-        .withColumn("_source_file", input_file_name())
-        .writeStream
-        .format("delta")
-        .outputMode("append")
-        .option("checkpointLocation", f"{checkpoint_path}/_checkpoints")
-        .table(f"bronze_catalog.retail_db.{target_table}")
-    )
-
-
-2. Standardizing & Quality Enforcing Engine (Silver Layer)
-
-Performing Change Data Capture (CDC) deduplication and MERGE INTO operations for target entity alignment.
-
-from delta.tables import DeltaTable
-from pyspark.sql.functions import col, row_number
-from pyspark.sql.window import Window
-
-def merge_silver_customers(silver_table_name: str):
-    bronze_df = spark.table("bronze_catalog.retail_db.raw_customers")
-    
-    window_spec = Window.partitionBy("customer_id").orderBy(col("updated_at").desc())
-    deduped_df = (bronze_df
-        .filter(col("customer_id").isNotNull())
-        .withColumn("row_num", row_number().over(window_spec))
-        .filter(col("row_num") == 1)
-        .drop("row_num")
-    )
-
-    silver_table = DeltaTable.forName(spark, f"silver_catalog.retail_db.{silver_table_name}")
-
-    (silver_table.alias("target")
-        .merge(deduped_df.alias("source"), "target.customer_id = source.customer_id")
-        .whenMatchedUpdate(set={
-            "first_name": col("source.first_name"),
-            "last_name": col("source.last_name"),
-            "email": col("source.email"),
-            "country": col("source.country"),
-            "updated_at": col("source.updated_at")
-        })
-        .whenNotMatchedInsert(values={
-            "customer_id": col("source.customer_id"),
-            "first_name": col("source.first_name"),
-            "last_name": col("source.last_name"),
-            "email": col("source.email"),
-            "country": col("source.country"),
-            "created_at": col("source.updated_at"),
-            "updated_at": col("source.updated_at")
-        })
-        .execute()
-    )
+A production-grade, multi-pipeline data platform built using Azure Databricks, Spark SQL, and Delta Lake's **Medallion Architecture**. This repository showcases comprehensive pipeline engineering—from structured IoT sensor feeds to high-throughput flight logistics tracking—culminating in business-ready **Power BI** executive suites.
 
 ---
 
-3. Dimensional Modeling Engine (Gold Layer)
-
-Constructing Kimball-style dimensional models (dim_customer, fact_sales) for low-latency BI query execution.
-
-from pyspark.sql.functions import sum as _sum, count, col, round
-
-def build_gold_customer_analytics():
-    fact_sales = spark.table("silver_catalog.retail_db.fact_orders")
-    dim_customers = spark.table("silver_catalog.retail_db.dim_customers")
-
-    gold_agg = (fact_sales
-        .groupBy("customer_id")
-        .agg(
-            round(_sum("order_amount"), 2).alias("total_lifetime_spend"),
-            count("order_id").alias("total_order_count")
-        )
-    )
-
-    gold_customer_dim = (dim_customers
-        .join(gold_agg, "customer_id", "left")
-        .na.fill({"total_lifetime_spend": 0.0, "total_order_count": 0})
-        .select(
-            col("customer_id"),
-            col("first_name"),
-            col("last_name"),
-            col("country"),
-            col("total_lifetime_spend"),
-            col("total_order_count")
-        )
-    )
-
-    (gold_customer_dim.write
-        .format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true")
-        .saveAsTable("gold_catalog.retail_db.gold_dim_customer_analytics")
-    )
-
+## 🌐 Live Project Showcase
+🚀 **Interactive Web Application:** [Explore the Live App Presentation](https://persona-data-deck.lovable.app)
+*Click the link above to view the full product slide narrative, architectural breakdowns, and interactive platform insights for this solution.*
 
 ---
 
-Lakehouse Maintenance & Optimization
+## 🗺️ Phase 1: Strategic Planning & Roadmap
 
--- Optimize file layout and data locality via Z-Ordering
-OPTIMIZE gold_catalog.retail_db.fact_sales
-ZORDER BY (transaction_date, customer_id);
+Before writing a line of code, the entire end-to-end architecture and timeline were mapped out to align data engineering deliverables with business milestones.
 
--- Clean up unreferenced historical files past retention policy
-VACUUM gold_catalog.retail_db.fact_sales RETAIN 168 HOURS;
-
-Power BI Integration
-
-    Connection Protocol: Databricks SQL Warehouse via native ODBC/JDBC driver.
-
-    Storage Modes: DirectQuery for real-time operational monitoring; Import Mode for optimized analytical aggregation.
-
-    Semantic Layer: Star Schema with DAX calculations for LTV, YoY revenue growth, and category profitability analysis.
+![Project Implementation Schedule](docs/images/project_planning_roadmap.png)
+*Figure 1: Canva-designed 22-step workflow planning, implementation schedule (Q3/Q4), resource allocation layout, and project milestone checkpoints.*
 
 ---
 
-Repository Structure
+## 🏗️ Core Architecture & Data Flow
 
-├── data/                       # Landing schema definitions
-├── notebooks/                  # Medallion pipeline PySpark scripts
-│   ├── 01_bronze_ingestion.py  
-│   ├── 02_silver_cleaning.py   
-│   ├── 03_gold_aggregation.py  
-│   └── 04_lakehouse_maintenance.py
-├── sql_warehouse/              # SQL queries and gold views
-├── dashboards/                 # Power BI report files (.pbix)
-└── README.md
+The platform implements decoupled compute and storage using Azure Databricks clusters and Delta Lake tables to progressively refine raw data.
+
+```mermaid
+graph TD
+    A[Raw POS / IoT / Flight Feeds] -->|ADLS Gen2 / DBFS Autoloader| B(Bronze: Immutable Raw Ingestion)
+    B -->|PySpark & Spark SQL| C(Silver: Cleansed & Conformed)
+    C -->|Dimensional Star-Schema Joins| D(Gold: Business Aggregates)
+    D -->|DirectQuery & Lakehouse Connect| E[Power BI Executive Dashboards]
+```
+
+---
+
+## 📷 Technical Deep-Dive & Execution Tour
+
+### 1. High-Velocity Streaming Ingestion (Bronze Layer)
+The platform utilizes optimized file-system schemas and **Spark AutoLoader** to automatically detect and ingest high-volume data streams (e.g., IoT sensor telemetry, global flight logistics) directly into the lakehouse format.
+
+| Ingestion System | Schema Blueprint & Ingest Trace |
+| :--- | :--- |
+| **Delta Lake Schema Browser:** Ingesting structured sensor CSV streams with automated schema mapping (`STRING`, `INTEGER`, `TIMESTAMP`, `FLOAT`). | ![Bronze Layer Ingestion](docs/images/bronze_schema_browser.png) |
+| **Spark AutoLoader Pipeline:** Pointing directly to cloud object directories (`dbfs:/databricks-datasets/flights/`) to stream raw JSON feeds seamlessly. | ![AutoLoader Pipeline](docs/images/autoloader_ingestion.png) |
+
+---
+
+### 2. Schema Enforcement, Cleaning & Validation (Silver Layer)
+Data quality is strictly managed using **Spark SQL constraint mechanisms**. Silver tables enforce primary keys (`NOT NULL`), check value bounds, isolate anomalies, and carry out structured **Delta Lake UPSERTs (MERGE INTO)** to keep transaction layers fresh without duplicating rows.
+
+![Data Quality & Validation Script](docs/images/databricks_cleaning_validation.png)
+*Figure 4: Production Spark SQL script establishing data consistency via validation check constraints and optimized merge-on-read logic.*
+
+---
+
+### 3. Star-Schema Modeling & Aggregation (Gold Layer)
+Refined facts and dimension tables are constructed for high-performance reporting. Analytical views are queried via a **Databricks SQL Warehouse** to handle granular slice-and-dice requests with minimal latency.
+
+| SQL Warehouse Semantic Layer | Integrated System Telemetry |
+| :--- | :--- |
+| **SQL Serving Engine:** Running downstream analytical joins across `gold_fact_sales`, `gold_dim_customer`, and logistics tables. | ![SQL Warehouse Querying](docs/images/sql_warehouse_serving.png) |
+| **Logistics Reporting Engine:** Direct SQL aggregation parsing global tracking data to sort distribution frequencies instantly. | ![Logistics Data Queries](docs/images/logistics_sql_analytics.png) |
+
+---
+
+### 4. Interactive Power BI Executive Dashboard
+Aggregated Gold-layer facts are linked straight to **Power BI Desktop**, transforming complex data transformations into clean, visual business metrics.
+
+![Power BI Analytical Suite](docs/images/powerbi_dashboard_draft.png)
+*Figure 7: Live Power BI report plotting time-intelligence trends across dimensions to deliver immediate revenue and volume insights.*
+
+---
+
+## 💻 Tech Stack
+*   **Orchestration & Compute:** Azure Databricks (PySpark, Spark SQL, AutoLoader)
+*   **Storage & Table Format:** Azure Data Lake Storage (ADLS Gen2), Delta Lake
+*   **Serving Layer:** Databricks SQL Warehouse
+*   **Visualization & Presentation:** Power BI Desktop, Lovable App Engine
+
+---
+
+## 🚀 Deployment & Operational Guide
+
+### 1. Directory Setup
+Before running the pipelines, ensure your local screenshot files are uploaded to GitHub under the following paths:
+*   `docs/images/project_planning_roadmap.png` (From your Canva template)
+*   `docs/images/bronze_schema_browser.png` (From your raw sensor schema view)
+*   `docs/images/autoloader_ingestion.png` (From your flights autoloader notebook)
+*   `docs/images/databricks_cleaning_validation.png` (From your Spark SQL constraint script)
+*   `docs/images/sql_warehouse_serving.png` (From your customer dim / sales fact query)
+*   `docs/images/logistics_sql_analytics.png` (From your flight origin bar graph view)
+*   `docs/images/powerbi_dashboard_draft.png` (From your live Power BI desktop file)
+
+### 2. Execution Sequence
+Run notebooks sequentially to process data through the architecture:
+1.  `01_bronze_ingestion.py`
+2.  `02_silver_cleansing.py`
+3.  `03_gold_star_schema.py`
+
+---
+*Project designed for enterprise-grade analytics evaluation.*
